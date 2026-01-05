@@ -23,6 +23,30 @@ func (s Stream[T]) ForEachIndexed(action func(int, T)) {
 	}
 }
 
+// ForEachErr executes the action on each element, returning the first error encountered.
+// If the action returns an error, iteration stops immediately and the error is returned.
+func (s Stream[T]) ForEachErr(action func(T) error) error {
+	for v := range s.seq {
+		if err := action(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ForEachIndexedErr executes the action on each element with its index, returning the first error encountered.
+// If the action returns an error, iteration stops immediately and the error is returned.
+func (s Stream[T]) ForEachIndexedErr(action func(int, T) error) error {
+	idx := 0
+	for v := range s.seq {
+		if err := action(idx, v); err != nil {
+			return err
+		}
+		idx++
+	}
+	return nil
+}
+
 // Collect gathers all elements into a slice.
 func (s Stream[T]) Collect() []T {
 	return slices.Collect(s.seq)

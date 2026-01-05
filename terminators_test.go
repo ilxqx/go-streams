@@ -32,6 +32,85 @@ func TestTerminators(t *testing.T) {
 		assert.Equal(t, []string{"a", "b", "c"}, values, "ForEachIndexed should provide values")
 	})
 
+	t.Run("ForEachErr", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("Success", func(t *testing.T) {
+			t.Parallel()
+			var collected []int
+			err := Of(1, 2, 3).ForEachErr(func(n int) error {
+				collected = append(collected, n*2)
+				return nil
+			})
+			assert.NoError(t, err, "ForEachErr should not return error on success")
+			assert.Equal(t, []int{2, 4, 6}, collected, "ForEachErr should visit all elements")
+		})
+
+		t.Run("Error", func(t *testing.T) {
+			t.Parallel()
+			var collected []int
+			expectedErr := assert.AnError
+			err := Of(1, 2, 3, 4).ForEachErr(func(n int) error {
+				if n == 3 {
+					return expectedErr
+				}
+				collected = append(collected, n)
+				return nil
+			})
+			assert.ErrorIs(t, err, expectedErr, "ForEachErr should return the error")
+			assert.Equal(t, []int{1, 2}, collected, "ForEachErr should stop at first error")
+		})
+
+		t.Run("Empty", func(t *testing.T) {
+			t.Parallel()
+			err := Empty[int]().ForEachErr(func(n int) error {
+				return assert.AnError
+			})
+			assert.NoError(t, err, "ForEachErr on empty stream should return nil")
+		})
+	})
+
+	t.Run("ForEachIndexedErr", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("Success", func(t *testing.T) {
+			t.Parallel()
+			var indices []int
+			var values []string
+			err := Of("a", "b", "c").ForEachIndexedErr(func(i int, s string) error {
+				indices = append(indices, i)
+				values = append(values, s)
+				return nil
+			})
+			assert.NoError(t, err, "ForEachIndexedErr should not return error on success")
+			assert.Equal(t, []int{0, 1, 2}, indices, "ForEachIndexedErr should provide indices")
+			assert.Equal(t, []string{"a", "b", "c"}, values, "ForEachIndexedErr should provide values")
+		})
+
+		t.Run("Error", func(t *testing.T) {
+			t.Parallel()
+			var indices []int
+			expectedErr := assert.AnError
+			err := Of("a", "b", "c", "d").ForEachIndexedErr(func(i int, s string) error {
+				if i == 2 {
+					return expectedErr
+				}
+				indices = append(indices, i)
+				return nil
+			})
+			assert.ErrorIs(t, err, expectedErr, "ForEachIndexedErr should return the error")
+			assert.Equal(t, []int{0, 1}, indices, "ForEachIndexedErr should stop at first error")
+		})
+
+		t.Run("Empty", func(t *testing.T) {
+			t.Parallel()
+			err := Empty[string]().ForEachIndexedErr(func(i int, s string) error {
+				return assert.AnError
+			})
+			assert.NoError(t, err, "ForEachIndexedErr on empty stream should return nil")
+		})
+	})
+
 	t.Run("Collect", func(t *testing.T) {
 		t.Parallel()
 		result := Of(1, 2, 3).Collect()
