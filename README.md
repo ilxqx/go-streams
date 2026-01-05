@@ -256,6 +256,7 @@ s := streams.Of(1, 2, 3, 4, 5)
 
 s.Collect()              // []T
 s.ForEach(action)        // Execute action on each
+s.ForEachErr(action)     // Execute action with error handling (stops on first error)
 s.Reduce(identity, fn)   // Combine elements
 s.Count()                // Number of elements
 s.First()                // Optional[T]
@@ -278,8 +279,9 @@ streams.Joining(s, separator)
 streams.Contains(s, target)
 
 // Context-aware terminal operations
-streams.CollectCtx(ctx, s)           // Collect with cancellation
-streams.ForEachCtx(ctx, s, action)   // ForEach with cancellation
+streams.CollectCtx(ctx, s)                    // Collect with cancellation
+streams.ForEachCtx(ctx, s, action)            // ForEach with cancellation (action: func(T) or func(T) error)
+streams.ReduceCtx(ctx, s, identity, reducer)  // Reduce with cancellation (reducer: func(T,T) T or func(T,T) (T, error))
 
 // IO output
 streams.ToWriter(s, writer, format)  // Write to io.Writer
@@ -1047,6 +1049,8 @@ perm := streams.Permutations(streams.Of(1,2,3)).Collect()             // [[1 2 3
 // Consumption
 func (s Stream[T]) ForEach(action func(T))
 func (s Stream[T]) ForEachIndexed(action func(int, T))
+func (s Stream[T]) ForEachErr(action func(T) error) error
+func (s Stream[T]) ForEachIndexedErr(action func(int, T) error) error
 func (s Stream[T]) Collect() []T
 func (s Stream[T]) Reduce(identity T, fn func(T,T) T) T
 func (s Stream[T]) ReduceOptional(fn func(T,T) T) Optional[T]
@@ -1096,6 +1100,17 @@ s := streams.Of(1,2,3,4,5)
 // ForEach / ForEachIndexed
 s.ForEach(func(v int){ fmt.Println(v) })
 s.ForEachIndexed(func(i,v int){ fmt.Println(i, v) })
+
+// ForEachErr / ForEachIndexedErr (error-aware iteration)
+err := s.ForEachErr(func(v int) error {
+    if v == 3 { return errors.New("error at 3") }
+    fmt.Println(v)
+    return nil
+}) // Stops at first error
+
+err = s.ForEachIndexedErr(func(i, v int) error {
+    return processItem(i, v) // Process with error handling
+})
 
 // Reduce / ReduceOptional / Fold / FoldTo
 sum := s.Reduce(0, func(a,b int) int { return a+b }) // 15
@@ -1200,8 +1215,8 @@ func MapCtx[T any](ctx context.Context, s Stream[T], fn func(T) T) Stream[T]
 func MapToCtx[T,U any](ctx context.Context, s Stream[T], fn func(T) U) Stream[U]
 
 func CollectCtx[T any](ctx context.Context, s Stream[T]) ([]T, error)
-func ForEachCtx[T any](ctx context.Context, s Stream[T], action func(T)) error
-func ReduceCtx[T any](ctx context.Context, s Stream[T], identity T, fn func(T,T) T) (T, error)
+func ForEachCtx[T any, A ~func(T) | ~func(T) error](ctx context.Context, s Stream[T], action A) error
+func ReduceCtx[T any, F ~func(T, T) T | ~func(T, T) (T, error)](ctx context.Context, s Stream[T], identity T, fn F) (T, error)
 func FindFirstCtx[T any](ctx context.Context, s Stream[T], pred func(T) bool) (Optional[T], error)
 func AnyMatchCtx[T any](ctx context.Context, s Stream[T], pred func(T) bool) (bool, error)
 func AllMatchCtx[T any](ctx context.Context, s Stream[T], pred func(T) bool) (bool, error)
@@ -1211,6 +1226,8 @@ func CountCtx[T any](ctx context.Context, s Stream[T]) (int, error)
 Notes:
 - On cancellation, ctx variants return the partial result plus `ctx.Err()` where applicable.
 - `WithContext*` stops emission promptly when `ctx.Done()` fires.
+- `ForEachCtx` action can be `func(T)` or `func(T) error` - stops on first error
+- `ReduceCtx` reducer can be `func(T, T) T` or `func(T, T) (T, error)` - stops on first error
 
 Examples:
 ```go
@@ -1223,6 +1240,17 @@ _ = streams.FromChannelCtx(ctx, make(chan int)) // stops on ctx.Done()
 // Cancellable map/filter and terminals
 xs, err := streams.CollectCtx(ctx, streams.Range(1,1_000_000))
 _ = err // context deadline exceeded (if it fired)
+
+// ForEachCtx with error handling
+err = streams.ForEachCtx(ctx, s, func(v int) error {
+    return process(v) // stops on first error
+})
+
+// ReduceCtx with error handling
+sum, err := streams.ReduceCtx(ctx, s, 0, func(a, b int) (int, error) {
+    if b == 0 { return a, errors.New("division by zero") }
+    return a / b, nil
+})
 ```
 
 ### IO: Lines, Bytes, CSV/TSV
