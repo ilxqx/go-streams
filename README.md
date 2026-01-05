@@ -42,31 +42,37 @@ A lazy, type-safe stream processing library for Go 1.25+, built on `iter.Seq` an
 
 ## Table of Contents
 
-- Overview
-- Requirements and Installation
-- Quick Start
-- Core Concepts
-- Examples (recipes)
-- Design Philosophy
-- API Reference
-  - Parameter Glossary
-  - Streams: Constructors and Interop
-  - Stream[T]: Intermediate Methods
-  - Free Transformations (type-changing)
-  - Specialized Combinators and Merges
-  - Terminal Operations
-  - Parallel Processing
-  - Context-Aware APIs
-  - IO: Lines/CSV/TSV/Writers
-  - Time-Based Operators
-  - Stream2[K,V]
-  - Joins
-  - Numeric and Statistics
-  - Collectors
-  - Result[T] Pipeline
-  - Optional[T]
-  - Tuples and Helpers
-- Contributing, License, Acknowledgments
+- [Features](#features)
+- [Quick API Index](#quick-api-index)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+- [Examples](#examples)
+- [Design Philosophy](#design-philosophy)
+- [API Reference](#api-reference)
+  - [Parameter Glossary](#parameter-glossary)
+  - [Streams: Constructors and Interop](#streams-constructors-and-interop)
+  - [Stream[T]: Intermediate Methods](#streamt-intermediate-lazy-methods)
+  - [Free Transformations (type-changing)](#streamt-free-transformations-type-changing-lazy)
+  - [Specialized Combinators and Merges](#specialized-combinators-and-merge-lazy-unless-noted)
+  - [Terminal Operations](#terminal-operations-eager)
+  - [Parallel Processing](#parallel-processing)
+  - [Context-Aware APIs](#context-aware-apis)
+  - [IO: Lines/CSV/TSV/Writers](#io-lines-bytes-csvtsv)
+  - [Time-Based Operators](#time-based-operators)
+  - [Stream2[K,V]](#stream2kv-key-value-streams)
+  - [Joins](#join-family-on-stream2-and-on-streamt-with-keys)
+  - [Numeric and Statistics](#numeric-and-statistics)
+  - [Collectors](#collectors-composable-accumulators)
+  - [Result[T] Pipeline](#resultt-pipeline-error-aware-streams)
+  - [Optional[T]](#optionalt)
+  - [Tuples and Helpers](#tuples-and-helpers)
+  - [go-collections Integration](#go-collections-integration)
+  - [Practical Guidance](#practical-guidance)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
 
 ## Requirements
 
@@ -1779,3 +1785,9 @@ set1.Equals(set2)          // false
 - For very large sub‑streams with `ParallelFlatMap` and ordered output, prefer `WithChunkSize` or `WithOrdered(false)` to bound memory.
 - When joining or doing Cartesian/combinatorics, inputs are collected; validate sizes or pre‑filter.
 - Use `ctx` variants in long‑running or IO/timer pipelines to support cancellation and timeouts cleanly.
+
+---
+
+## License
+
+MIT, see [LICENSE](LICENSE).
