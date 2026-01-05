@@ -3,7 +3,7 @@ module github.com/ilxqx/go-streams
 go 1.25.0
 
 require (
-	github.com/ilxqx/go-collections v0.1.1
+	github.com/ilxqx/go-collections v0.2.0
 	github.com/stretchr/testify v1.11.1
 )
 
