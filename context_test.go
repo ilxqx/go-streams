@@ -2,6 +2,7 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -419,6 +420,56 @@ func TestForEachCtx(t *testing.T) {
 		assert.Error(t, err, "ForEachCtx should error on already-cancelled context")
 		assert.Equal(t, 0, count, "ForEachCtx should not execute callback on cancelled context")
 	})
+
+	t.Run("WithErrorFunc", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		var collected []int
+		expectedErr := errors.New("test error")
+
+		err := ForEachCtx(ctx, Of(1, 2, 3, 4, 5), func(n int) error {
+			if n == 3 {
+				return expectedErr
+			}
+			collected = append(collected, n)
+			return nil
+		})
+
+		assert.Error(t, err, "ForEachCtx should return error from action")
+		assert.Equal(t, expectedErr, err, "ForEachCtx should return the exact error")
+		assert.Equal(t, []int{1, 2}, collected, "ForEachCtx should stop at first error")
+	})
+
+	t.Run("WithErrorFuncSuccess", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		var sum int
+
+		err := ForEachCtx(ctx, Of(1, 2, 3, 4, 5), func(n int) error {
+			sum += n
+			return nil
+		})
+
+		assert.NoError(t, err, "ForEachCtx should not error on successful iteration")
+		assert.Equal(t, 15, sum, "ForEachCtx should process all elements")
+	})
+
+	t.Run("WithErrorFuncAndContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		var collected []int
+
+		err := ForEachCtx(ctx, Of(1, 2, 3, 4, 5), func(n int) error {
+			collected = append(collected, n)
+			if n == 2 {
+				cancel()
+			}
+			return nil
+		})
+
+		assert.Error(t, err, "ForEachCtx should return context error")
+		assert.Equal(t, context.Canceled, err, "ForEachCtx should return context.Canceled")
+	})
 }
 
 func TestReduceCtx(t *testing.T) {
@@ -463,6 +514,74 @@ func TestReduceCtx(t *testing.T) {
 		result, err := ReduceCtx(ctx, Empty[int](), 100, func(a, b int) int { return a + b })
 		assert.NoError(t, err, "ReduceCtx empty should not error")
 		assert.Equal(t, 100, result, "ReduceCtx empty should return identity")
+	})
+
+	t.Run("WithErrorFunc", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		expectedErr := errors.New("reduction error")
+
+		result, err := ReduceCtx(ctx, Of(1, 2, 3, 4, 5), 0, func(a, b int) (int, error) {
+			if b == 3 {
+				return a, expectedErr
+			}
+			return a + b, nil
+		})
+
+		assert.Error(t, err, "ReduceCtx should return error from reducer")
+		assert.Equal(t, expectedErr, err, "ReduceCtx should return the exact error")
+		assert.Equal(t, 3, result, "ReduceCtx should return partial result (0+1+2=3)")
+	})
+
+	t.Run("WithErrorFuncSuccess", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+
+		result, err := ReduceCtx(ctx, Of(1, 2, 3, 4, 5), 0, func(a, b int) (int, error) {
+			return a + b, nil
+		})
+
+		assert.NoError(t, err, "ReduceCtx should not error on successful reduction")
+		assert.Equal(t, 15, result, "ReduceCtx should reduce to sum=15")
+	})
+
+	t.Run("WithErrorFuncAndContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		counter := 0
+
+		s := Generate(func() int {
+			counter++
+			if counter == 3 {
+				cancel()
+			}
+			return counter
+		}).Limit(10)
+
+		result, err := ReduceCtx(ctx, s, 0, func(a, b int) (int, error) {
+			return a + b, nil
+		})
+
+		assert.Error(t, err, "ReduceCtx should return context error")
+		assert.Equal(t, context.Canceled, err, "ReduceCtx should return context.Canceled")
+		assert.Greater(t, result, 0, "ReduceCtx should return partial result")
+	})
+
+	t.Run("WithErrorFuncReturningError", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		expectedErr := errors.New("division by zero")
+
+		result, err := ReduceCtx(ctx, Of(10, 5, 0, 2), 100, func(a, b int) (int, error) {
+			if b == 0 {
+				return a, expectedErr
+			}
+			return a / b, nil
+		})
+
+		assert.Error(t, err, "ReduceCtx should return error")
+		assert.Equal(t, expectedErr, err, "ReduceCtx should return division error")
+		assert.Equal(t, 2, result, "ReduceCtx should return partial result (100/10/5=2)")
 	})
 }
 

@@ -168,29 +168,57 @@ func CollectCtx[T any](ctx context.Context, s Stream[T]) ([]T, error) {
 }
 
 // ForEachCtx executes an action on each element with context support.
-// Returns the context error if cancelled.
-func ForEachCtx[T any](ctx context.Context, s Stream[T], action func(T)) error {
+// The action can be either func(T) or func(T) error.
+// If action is func(T) error and returns an error, iteration stops and the error is returned.
+// Returns the context error if cancelled, or the first error from action.
+//
+// Examples:
+//   err := ForEachCtx(ctx, s, func(v int) { fmt.Println(v) })
+//   err := ForEachCtx(ctx, s, func(v int) error { return process(v) })
+func ForEachCtx[T any, A ~func(T) | ~func(T) error](ctx context.Context, s Stream[T], action A) error {
 	for v := range s.seq {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			action(v)
+			switch fn := any(action).(type) {
+			case func(T):
+				fn(v)
+			case func(T) error:
+				if err := fn(v); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
 }
 
 // ReduceCtx reduces the stream with context support.
-// Returns the accumulated result and context error if cancelled.
-func ReduceCtx[T any](ctx context.Context, s Stream[T], identity T, fn func(T, T) T) (T, error) {
+// The reducer function can be either func(T, T) T or func(T, T) (T, error).
+// If reducer is func(T, T) (T, error) and returns an error, reduction stops and the error is returned.
+// Returns the accumulated result and context error if cancelled, or the first error from reducer.
+//
+// Examples:
+//   result, err := ReduceCtx(ctx, s, 0, func(a, b int) int { return a + b })
+//   result, err := ReduceCtx(ctx, s, 0, func(a, b int) (int, error) { return compute(a, b) })
+func ReduceCtx[T any, F ~func(T, T) T | ~func(T, T) (T, error)](ctx context.Context, s Stream[T], identity T, fn F) (T, error) {
 	result := identity
 	for v := range s.seq {
 		select {
 		case <-ctx.Done():
 			return result, ctx.Err()
 		default:
-			result = fn(result, v)
+			switch reducer := any(fn).(type) {
+			case func(T, T) T:
+				result = reducer(result, v)
+			case func(T, T) (T, error):
+				var err error
+				result, err = reducer(result, v)
+				if err != nil {
+					return result, err
+				}
+			}
 		}
 	}
 	return result, nil
