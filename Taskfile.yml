@@ -1,0 +1,95 @@
+version: '3'
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+  BUILD_TIME:
+    sh: date -u '+%Y-%m-%dT%H:%M:%SZ'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list-all
+
+  build:
+    desc: Build the library (verify compilation)
+    cmds:
+      - go build ./...
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -v -race ./...
+
+  test:coverage:
+    desc: Run tests with coverage report
+    cmds:
+      - go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - go tool cover -html=coverage.txt -o coverage.html
+      - echo "Coverage report generated at coverage.html"
+
+  test:short:
+    desc: Run tests (short mode)
+    cmds:
+      - go test -v -short ./...
+
+  lint:
+    desc: Run linters
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Format code
+    cmds:
+      - go fmt ./...
+      - goimports -w .
+
+  tidy:
+    desc: Tidy go modules
+    cmds:
+      - go mod tidy
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -f coverage.txt coverage.html
+      - go clean -cache -testcache
+
+  check:
+    desc: Run all checks (fmt, vet, lint, test)
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - go test -bench=. -benchmem ./...
+
+  doc:
+    desc: Start documentation server
+    cmds:
+      - echo "Starting godoc server at http://localhost:6060/pkg/github.com/ilxqx/go-streams/"
+      - godoc -http=:6060
+  
+  modernize:
+    desc: Run Go modernize analyzer to suggest code modernizations
+    cmds:
+      - go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -test ./...
+
+  version:
+    desc: Display version information
+    cmds:
+      - echo "Version {{.VERSION}}"
+      - echo "Commit {{.COMMIT}}"
+      - echo "Build Time {{.BUILD_TIME}}"
