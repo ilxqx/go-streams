@@ -1,13 +1,20 @@
 package streams
 
 import (
+	"context"
 	"runtime"
 	"sort"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// testCtx returns a background context for tests.
+func testCtx() context.Context {
+	return context.Background()
+}
 
 // --- ParallelConfig Tests ---
 
@@ -868,5 +875,200 @@ func TestParallelEdgeCases(t *testing.T) {
 			return Of(n*10, n*10+1)
 		}, WithConcurrency(2), WithOrdered(true), WithChunkSize(1)).Collect()
 		assert.Equal(t, []int{10, 11, 20, 21, 30, 31}, result, "ChunkSize 1 should still preserve order")
+	})
+}
+
+// --- ParallelForEachCtx Tests ---
+
+func TestParallelForEachCtx(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		var sum atomic.Int64
+		err := ParallelForEachCtx(testCtx(), Of(1, 2, 3, 4, 5), func(ctx context.Context, n int) {
+			sum.Add(int64(n))
+		}, WithConcurrency(2))
+		assert.NoError(t, err, "ParallelForEachCtx should not error")
+		assert.Equal(t, int64(15), sum.Load(), "ParallelForEachCtx should process all elements")
+	})
+
+	t.Run("Empty", func(t *testing.T) {
+		t.Parallel()
+		var count atomic.Int64
+		err := ParallelForEachCtx(testCtx(), Empty[int](), func(ctx context.Context, n int) {
+			count.Add(1)
+		})
+		assert.NoError(t, err, "ParallelForEachCtx on empty should not error")
+		assert.Equal(t, int64(0), count.Load(), "ParallelForEachCtx on empty should not call action")
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		var count atomic.Int64
+
+		// Cancel immediately
+		cancel()
+
+		err := ParallelForEachCtx(ctx, Range(1, 1000), func(ctx context.Context, n int) {
+			count.Add(1)
+		}, WithConcurrency(4))
+
+		assert.Error(t, err, "ParallelForEachCtx should return error on cancelled context")
+		assert.Equal(t, context.Canceled, err, "Error should be context.Canceled")
+	})
+
+	t.Run("ContextTimeout", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+		defer cancel()
+
+		var count atomic.Int64
+		err := ParallelForEachCtx(ctx, Range(1, 10000), func(ctx context.Context, n int) {
+			time.Sleep(10 * time.Millisecond) // Slow operation
+			count.Add(1)
+		}, WithConcurrency(2))
+
+		assert.Error(t, err, "ParallelForEachCtx should return error on timeout")
+	})
+
+	t.Run("LargeInput", func(t *testing.T) {
+		t.Parallel()
+		var sum atomic.Int64
+		err := ParallelForEachCtx(testCtx(), Range(1, 101), func(ctx context.Context, n int) {
+			sum.Add(int64(n))
+		}, WithConcurrency(4))
+		assert.NoError(t, err, "ParallelForEachCtx should not error on large input")
+		assert.Equal(t, int64(5050), sum.Load(), "ParallelForEachCtx should sum 1-100 correctly")
+	})
+}
+
+// --- ParallelMapCtx Tests ---
+
+func TestParallelMapCtx(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelMapCtx(testCtx(), Of(1, 2, 3), func(ctx context.Context, n int) int {
+			return n * 2
+		}, WithOrdered(true)).Collect()
+		assert.Equal(t, []int{2, 4, 6}, result, "ParallelMapCtx should transform elements")
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		result := ParallelMapCtx(ctx, Range(1, 1000), func(ctx context.Context, n int) int {
+			return n * 2
+		}, WithConcurrency(4), WithOrdered(true)).Collect()
+
+		// Should return early due to cancellation
+		assert.Less(t, len(result), 1000, "ParallelMapCtx should stop early on cancellation")
+	})
+
+	t.Run("Unordered", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelMapCtx(testCtx(), Of(1, 2, 3, 4, 5), func(ctx context.Context, n int) int {
+			return n * 2
+		}, WithOrdered(false), WithConcurrency(2)).Collect()
+		assert.Len(t, result, 5, "ParallelMapCtx unordered should return all elements")
+	})
+
+	t.Run("Chunked", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelMapCtx(testCtx(), Of(1, 2, 3, 4, 5), func(ctx context.Context, n int) int {
+			return n * 2
+		}, WithOrdered(true), WithChunkSize(2)).Collect()
+		assert.Equal(t, []int{2, 4, 6, 8, 10}, result, "ParallelMapCtx chunked should preserve order")
+	})
+}
+
+// --- ParallelFilterCtx Tests ---
+
+func TestParallelFilterCtx(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelFilterCtx(testCtx(), Of(1, 2, 3, 4, 5), func(ctx context.Context, n int) bool {
+			return n%2 == 0
+		}, WithOrdered(true)).Collect()
+		assert.Equal(t, []int{2, 4}, result, "ParallelFilterCtx should filter elements")
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		result := ParallelFilterCtx(ctx, Range(1, 1000), func(ctx context.Context, n int) bool {
+			return n%2 == 0
+		}, WithConcurrency(4), WithOrdered(true)).Collect()
+
+		// Should return early due to cancellation
+		assert.Less(t, len(result), 500, "ParallelFilterCtx should stop early on cancellation")
+	})
+
+	t.Run("Unordered", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelFilterCtx(testCtx(), Of(1, 2, 3, 4, 5, 6), func(ctx context.Context, n int) bool {
+			return n%2 == 0
+		}, WithOrdered(false), WithConcurrency(2)).Collect()
+		assert.Len(t, result, 3, "ParallelFilterCtx unordered should return filtered elements")
+	})
+
+	t.Run("Chunked", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelFilterCtx(testCtx(), Of(1, 2, 3, 4, 5, 6), func(ctx context.Context, n int) bool {
+			return n%2 == 0
+		}, WithOrdered(true), WithChunkSize(2)).Collect()
+		assert.Equal(t, []int{2, 4, 6}, result, "ParallelFilterCtx chunked should preserve order")
+	})
+}
+
+// --- ParallelFlatMapCtx Tests ---
+
+func TestParallelFlatMapCtx(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelFlatMapCtx(testCtx(), Of(1, 2, 3), func(ctx context.Context, n int) Stream[int] {
+			return Of(n, n*10)
+		}, WithOrdered(true)).Collect()
+		assert.Equal(t, []int{1, 10, 2, 20, 3, 30}, result, "ParallelFlatMapCtx should flatten elements")
+	})
+
+	t.Run("ContextCancellation", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		result := ParallelFlatMapCtx(ctx, Range(1, 100), func(ctx context.Context, n int) Stream[int] {
+			return Of(n, n*10)
+		}, WithConcurrency(4), WithOrdered(true)).Collect()
+
+		// Should return early due to cancellation
+		assert.Less(t, len(result), 200, "ParallelFlatMapCtx should stop early on cancellation")
+	})
+
+	t.Run("Unordered", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelFlatMapCtx(testCtx(), Of(1, 2, 3), func(ctx context.Context, n int) Stream[int] {
+			return Of(n, n*10)
+		}, WithOrdered(false), WithConcurrency(2)).Collect()
+		assert.Len(t, result, 6, "ParallelFlatMapCtx unordered should return all elements")
+	})
+
+	t.Run("Chunked", func(t *testing.T) {
+		t.Parallel()
+		result := ParallelFlatMapCtx(testCtx(), Of(1, 2, 3), func(ctx context.Context, n int) Stream[int] {
+			return Of(n, n*10)
+		}, WithOrdered(true), WithChunkSize(2)).Collect()
+		assert.Equal(t, []int{1, 10, 2, 20, 3, 30}, result, "ParallelFlatMapCtx chunked should preserve order")
 	})
 }

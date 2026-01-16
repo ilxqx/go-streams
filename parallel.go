@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"context"
 	"iter"
 	"runtime"
 	"sync"
@@ -83,27 +84,35 @@ type indexedValue[T any] struct {
 // ParallelMap transforms each element using the given function in parallel.
 // By default, it preserves the input order.
 func ParallelMap[T, U any](s Stream[T], fn func(T) U, opts ...ParallelOption) Stream[U] {
+	return ParallelMapCtx(context.Background(), s, func(_ context.Context, v T) U {
+		return fn(v)
+	}, opts...)
+}
+
+// ParallelMapCtx transforms each element using the given function in parallel with context support.
+// The context passed to fn is the same as the ctx parameter, allowing for cancellation checks.
+func ParallelMapCtx[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) U, opts ...ParallelOption) Stream[U] {
 	cfg := DefaultParallelConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
 	if cfg.Ordered {
-		return parallelMapOrdered(s, fn, cfg)
+		return parallelMapOrdered(ctx, s, fn, cfg)
 	}
-	return parallelMapUnordered(s, fn, cfg)
+	return parallelMapUnordered(ctx, s, fn, cfg)
 }
 
 // parallelMapOrdered processes elements in parallel while preserving order.
-func parallelMapOrdered[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfig) Stream[U] {
+func parallelMapOrdered[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) U, cfg ParallelConfig) Stream[U] {
 	if cfg.ChunkSize > 0 {
-		return parallelMapOrderedChunked(s, fn, cfg)
+		return parallelMapOrderedChunked(ctx, s, fn, cfg)
 	}
-	return parallelMapOrderedStreaming(s, fn, cfg)
+	return parallelMapOrderedStreaming(ctx, s, fn, cfg)
 }
 
 // parallelMapOrderedStreaming preserves order but may buffer many out-of-order results (unbounded).
-func parallelMapOrderedStreaming[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfig) Stream[U] {
+func parallelMapOrderedStreaming[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) U, cfg ParallelConfig) Stream[U] {
 	return Stream[U]{
 		seq: func(yield func(U) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -117,6 +126,17 @@ func parallelMapOrderedStreaming[T, U any](s Stream[T], fn func(T) U, cfg Parall
 				feedWg   sync.WaitGroup // Track feed goroutine for safe stop()
 			)
 
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
+
 			for range cfg.Concurrency {
 				wg.Go(func() {
 					for {
@@ -127,7 +147,7 @@ func parallelMapOrderedStreaming[T, U any](s Stream[T], fn func(T) U, cfg Parall
 							if !ok {
 								return
 							}
-							result := fn(item.value)
+							result := fn(ctx, item.value)
 							select {
 							case <-done:
 								return
@@ -202,7 +222,7 @@ func parallelMapOrderedStreaming[T, U any](s Stream[T], fn func(T) U, cfg Parall
 
 // parallelMapOrderedChunked processes inputs in fixed-size chunks to bound memory usage.
 // Each chunk is processed in parallel up to cfg.Concurrency and yielded in order.
-func parallelMapOrderedChunked[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfig) Stream[U] {
+func parallelMapOrderedChunked[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) U, cfg ParallelConfig) Stream[U] {
 	return Stream[U]{
 		seq: func(yield func(U) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -210,6 +230,24 @@ func parallelMapOrderedChunked[T, U any](s Stream[T], fn func(T) U, cfg Parallel
 
 			done := make(chan struct{})
 			var closed atomic.Bool
+
+			// Ensure done channel is closed when function exits to prevent goroutine leak
+			defer func() {
+				if closed.CompareAndSwap(false, true) {
+					close(done)
+				}
+			}()
+
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
 
 			for {
 				chunk := make([]T, 0, cfg.ChunkSize)
@@ -236,16 +274,20 @@ func parallelMapOrderedChunked[T, U any](s Stream[T], fn func(T) U, cfg Parallel
 				)
 
 				for i, v := range chunk {
-					sem <- struct{}{}
+					select {
+					case <-done:
+						return
+					case sem <- struct{}{}: // semaphore acquire with cancel check
+					}
 					wg.Go(func(idx int, val T) func() {
 						return func() {
-							defer func() { <-sem }()
+							defer func() { <-sem }() // semaphore release
 							select {
 							case <-done:
 								return
 							default:
 							}
-							results[idx] = fn(val)
+							results[idx] = fn(ctx, val)
 						}
 					}(i, v))
 				}
@@ -265,7 +307,7 @@ func parallelMapOrderedChunked[T, U any](s Stream[T], fn func(T) U, cfg Parallel
 }
 
 // parallelMapUnordered processes elements in parallel without preserving order.
-func parallelMapUnordered[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfig) Stream[U] {
+func parallelMapUnordered[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) U, cfg ParallelConfig) Stream[U] {
 	return Stream[U]{
 		seq: func(yield func(U) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -279,6 +321,17 @@ func parallelMapUnordered[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfi
 				feedWg   sync.WaitGroup // Track feed goroutine for safe stop()
 			)
 
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
+
 			for range cfg.Concurrency {
 				wg.Go(func() {
 					for {
@@ -289,10 +342,11 @@ func parallelMapUnordered[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfi
 							if !ok {
 								return
 							}
+							result := fn(ctx, v)
 							select {
 							case <-done:
 								return
-							case outputCh <- fn(v):
+							case outputCh <- result:
 							}
 						}
 					}
@@ -346,15 +400,22 @@ func parallelMapUnordered[T, U any](s Stream[T], fn func(T) U, cfg ParallelConfi
 // ParallelFilter filters elements using the given predicate in parallel.
 // By default, it preserves the input order.
 func ParallelFilter[T any](s Stream[T], pred func(T) bool, opts ...ParallelOption) Stream[T] {
+	return ParallelFilterCtx(context.Background(), s, func(_ context.Context, v T) bool {
+		return pred(v)
+	}, opts...)
+}
+
+// ParallelFilterCtx filters elements using the given predicate in parallel with context support.
+func ParallelFilterCtx[T any](ctx context.Context, s Stream[T], pred func(context.Context, T) bool, opts ...ParallelOption) Stream[T] {
 	cfg := DefaultParallelConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
 	if cfg.Ordered {
-		return parallelFilterOrdered(s, pred, cfg)
+		return parallelFilterOrdered(ctx, s, pred, cfg)
 	}
-	return parallelFilterUnordered(s, pred, cfg)
+	return parallelFilterUnordered(ctx, s, pred, cfg)
 }
 
 // filterResult holds a value and whether it passed the filter.
@@ -365,15 +426,15 @@ type filterResult[T any] struct {
 }
 
 // parallelFilterOrdered filters in parallel while preserving order.
-func parallelFilterOrdered[T any](s Stream[T], pred func(T) bool, cfg ParallelConfig) Stream[T] {
+func parallelFilterOrdered[T any](ctx context.Context, s Stream[T], pred func(context.Context, T) bool, cfg ParallelConfig) Stream[T] {
 	if cfg.ChunkSize > 0 {
-		return parallelFilterOrderedChunked(s, pred, cfg)
+		return parallelFilterOrderedChunked(ctx, s, pred, cfg)
 	}
-	return parallelFilterOrderedStreaming(s, pred, cfg)
+	return parallelFilterOrderedStreaming(ctx, s, pred, cfg)
 }
 
 // parallelFilterOrderedStreaming preserves order but may buffer many out-of-order results (unbounded).
-func parallelFilterOrderedStreaming[T any](s Stream[T], pred func(T) bool, cfg ParallelConfig) Stream[T] {
+func parallelFilterOrderedStreaming[T any](ctx context.Context, s Stream[T], pred func(context.Context, T) bool, cfg ParallelConfig) Stream[T] {
 	return Stream[T]{
 		seq: func(yield func(T) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -387,7 +448,18 @@ func parallelFilterOrderedStreaming[T any](s Stream[T], pred func(T) bool, cfg P
 				feedWg   sync.WaitGroup // Track feed goroutine for safe stop()
 			)
 
-			for i := 0; i < cfg.Concurrency; i++ {
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
+
+			for range cfg.Concurrency {
 				wg.Go(func() {
 					for {
 						select {
@@ -397,7 +469,7 @@ func parallelFilterOrderedStreaming[T any](s Stream[T], pred func(T) bool, cfg P
 							if !ok {
 								return
 							}
-							passed := pred(item.value)
+							passed := pred(ctx, item.value)
 							select {
 							case <-done:
 								return
@@ -472,7 +544,7 @@ func parallelFilterOrderedStreaming[T any](s Stream[T], pred func(T) bool, cfg P
 }
 
 // parallelFilterOrderedChunked processes inputs in fixed-size chunks to bound memory usage.
-func parallelFilterOrderedChunked[T any](s Stream[T], pred func(T) bool, cfg ParallelConfig) Stream[T] {
+func parallelFilterOrderedChunked[T any](ctx context.Context, s Stream[T], pred func(context.Context, T) bool, cfg ParallelConfig) Stream[T] {
 	return Stream[T]{
 		seq: func(yield func(T) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -480,6 +552,24 @@ func parallelFilterOrderedChunked[T any](s Stream[T], pred func(T) bool, cfg Par
 
 			done := make(chan struct{})
 			var closed atomic.Bool
+
+			// Ensure done channel is closed when function exits to prevent goroutine leak
+			defer func() {
+				if closed.CompareAndSwap(false, true) {
+					close(done)
+				}
+			}()
+
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
 
 			for {
 				chunk := make([]T, 0, cfg.ChunkSize)
@@ -504,21 +594,27 @@ func parallelFilterOrderedChunked[T any](s Stream[T], pred func(T) bool, cfg Par
 					v  T
 				}
 				results := make([]res, len(chunk))
-				var wg sync.WaitGroup
-				sem := make(chan struct{}, cfg.Concurrency)
+				var (
+					wg  sync.WaitGroup
+					sem = make(chan struct{}, cfg.Concurrency)
+				)
 
 				for i, v := range chunk {
-					sem <- struct{}{}
+					select {
+					case <-done:
+						return
+					case sem <- struct{}{}: // semaphore acquire with cancel check
+					}
 					wg.Go(func(idx int, val T) func() {
 						return func() {
-							defer func() { <-sem }()
+							defer func() { <-sem }() // semaphore release
 							select {
 							case <-done:
 								return
 							default:
 							}
 							results[idx] = res{
-								ok: pred(val),
+								ok: pred(ctx, val),
 								v:  val,
 							}
 						}
@@ -542,7 +638,7 @@ func parallelFilterOrderedChunked[T any](s Stream[T], pred func(T) bool, cfg Par
 }
 
 // parallelFilterUnordered filters in parallel without preserving order.
-func parallelFilterUnordered[T any](s Stream[T], pred func(T) bool, cfg ParallelConfig) Stream[T] {
+func parallelFilterUnordered[T any](ctx context.Context, s Stream[T], pred func(context.Context, T) bool, cfg ParallelConfig) Stream[T] {
 	return Stream[T]{
 		seq: func(yield func(T) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -556,6 +652,17 @@ func parallelFilterUnordered[T any](s Stream[T], pred func(T) bool, cfg Parallel
 				feedWg   sync.WaitGroup // Track feed goroutine for safe stop()
 			)
 
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
+
 			for range cfg.Concurrency {
 				wg.Go(func() {
 					for {
@@ -566,7 +673,7 @@ func parallelFilterUnordered[T any](s Stream[T], pred func(T) bool, cfg Parallel
 							if !ok {
 								return
 							}
-							if pred(v) {
+							if pred(ctx, v) {
 								select {
 								case <-done:
 									return
@@ -624,15 +731,22 @@ func parallelFilterUnordered[T any](s Stream[T], pred func(T) bool, cfg Parallel
 
 // ParallelFlatMap maps each element to a stream and flattens the results in parallel.
 func ParallelFlatMap[T, U any](s Stream[T], fn func(T) Stream[U], opts ...ParallelOption) Stream[U] {
+	return ParallelFlatMapCtx(context.Background(), s, func(_ context.Context, v T) Stream[U] {
+		return fn(v)
+	}, opts...)
+}
+
+// ParallelFlatMapCtx maps each element to a stream and flattens the results in parallel with context support.
+func ParallelFlatMapCtx[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) Stream[U], opts ...ParallelOption) Stream[U] {
 	cfg := DefaultParallelConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
 	if cfg.Ordered {
-		return parallelFlatMapOrdered(s, fn, cfg)
+		return parallelFlatMapOrdered(ctx, s, fn, cfg)
 	}
-	return parallelFlatMapUnordered(s, fn, cfg)
+	return parallelFlatMapUnordered(ctx, s, fn, cfg)
 }
 
 // flatMapResult holds all results from a single flatmap operation.
@@ -645,17 +759,17 @@ type flatMapResult[U any] struct {
 // Note: This function collects each sub-stream into memory to preserve order.
 // For large sub-streams, consider using parallelFlatMapUnordered instead.
 // When ChunkSize > 0, uses chunked reordering to limit memory usage.
-func parallelFlatMapOrdered[T, U any](s Stream[T], fn func(T) Stream[U], cfg ParallelConfig) Stream[U] {
+func parallelFlatMapOrdered[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) Stream[U], cfg ParallelConfig) Stream[U] {
 	if cfg.ChunkSize > 0 {
-		return parallelFlatMapOrderedChunked(s, fn, cfg)
+		return parallelFlatMapOrderedChunked(ctx, s, fn, cfg)
 	}
-	return parallelFlatMapOrderedStreaming(s, fn, cfg)
+	return parallelFlatMapOrderedStreaming(ctx, s, fn, cfg)
 }
 
 // parallelFlatMapOrderedStreaming is the original streaming implementation.
 // May buffer all out-of-order results in memory (worst case: O(N) sub-stream results
 // when processing is highly unbalanced). Use chunked mode for bounded memory.
-func parallelFlatMapOrderedStreaming[T, U any](s Stream[T], fn func(T) Stream[U], cfg ParallelConfig) Stream[U] {
+func parallelFlatMapOrderedStreaming[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) Stream[U], cfg ParallelConfig) Stream[U] {
 	return Stream[U]{
 		seq: func(yield func(U) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -669,6 +783,17 @@ func parallelFlatMapOrderedStreaming[T, U any](s Stream[T], fn func(T) Stream[U]
 				feedWg   sync.WaitGroup // Track feed goroutine for safe stop()
 			)
 
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
+
 			for range cfg.Concurrency {
 				wg.Go(func() {
 					for {
@@ -680,7 +805,7 @@ func parallelFlatMapOrderedStreaming[T, U any](s Stream[T], fn func(T) Stream[U]
 								return
 							}
 							// Collect sub-stream with cancellation support
-							inner := fn(item.value)
+							inner := fn(ctx, item.value)
 							var values []U
 							for u := range inner.seq {
 								if closed.Load() {
@@ -759,7 +884,7 @@ func parallelFlatMapOrderedStreaming[T, U any](s Stream[T], fn func(T) Stream[U]
 
 // parallelFlatMapOrderedChunked processes in chunks to limit memory usage.
 // Each chunk is fully processed before moving to the next, bounding memory to ChunkSize results.
-func parallelFlatMapOrderedChunked[T, U any](s Stream[T], fn func(T) Stream[U], cfg ParallelConfig) Stream[U] {
+func parallelFlatMapOrderedChunked[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) Stream[U], cfg ParallelConfig) Stream[U] {
 	return Stream[U]{
 		seq: func(yield func(U) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -767,6 +892,24 @@ func parallelFlatMapOrderedChunked[T, U any](s Stream[T], fn func(T) Stream[U], 
 
 			done := make(chan struct{})
 			var closed atomic.Bool
+
+			// Ensure done channel is closed when function exits to prevent goroutine leak
+			defer func() {
+				if closed.CompareAndSwap(false, true) {
+					close(done)
+				}
+			}()
+
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
 
 			for {
 				chunk := make([]T, 0, cfg.ChunkSize)
@@ -800,10 +943,14 @@ func parallelFlatMapOrderedChunked[T, U any](s Stream[T], fn func(T) Stream[U], 
 					default:
 					}
 
-					sem <- struct{}{}
+					select {
+					case <-done:
+						return
+					case sem <- struct{}{}: // semaphore acquire with cancel check
+					}
 					wg.Go(func(idx int, val T) func() {
 						return func() {
-							defer func() { <-sem }()
+							defer func() { <-sem }() // semaphore release
 
 							select {
 							case <-done:
@@ -811,7 +958,7 @@ func parallelFlatMapOrderedChunked[T, U any](s Stream[T], fn func(T) Stream[U], 
 							default:
 							}
 
-							inner := fn(val)
+							inner := fn(ctx, val)
 							var buf []U
 							for u := range inner.seq {
 								if closed.Load() {
@@ -842,7 +989,7 @@ func parallelFlatMapOrderedChunked[T, U any](s Stream[T], fn func(T) Stream[U], 
 }
 
 // parallelFlatMapUnordered processes in parallel without preserving order.
-func parallelFlatMapUnordered[T, U any](s Stream[T], fn func(T) Stream[U], cfg ParallelConfig) Stream[U] {
+func parallelFlatMapUnordered[T, U any](ctx context.Context, s Stream[T], fn func(context.Context, T) Stream[U], cfg ParallelConfig) Stream[U] {
 	return Stream[U]{
 		seq: func(yield func(U) bool) {
 			next, stop := iter.Pull(s.seq)
@@ -856,6 +1003,17 @@ func parallelFlatMapUnordered[T, U any](s Stream[T], fn func(T) Stream[U], cfg P
 				feedWg   sync.WaitGroup // Track feed goroutine for safe stop()
 			)
 
+			// Monitor context cancellation
+			go func() {
+				select {
+				case <-ctx.Done():
+					if closed.CompareAndSwap(false, true) {
+						close(done)
+					}
+				case <-done:
+				}
+			}()
+
 			for range cfg.Concurrency {
 				wg.Go(func() {
 					for {
@@ -866,7 +1024,7 @@ func parallelFlatMapUnordered[T, U any](s Stream[T], fn func(T) Stream[U], cfg P
 							if !ok {
 								return
 							}
-							for u := range fn(v).seq {
+							for u := range fn(ctx, v).seq {
 								select {
 								case <-done:
 									return
@@ -1090,4 +1248,64 @@ func ParallelCollect[T any](s Stream[T], opts ...ParallelOption) []T {
 	}, opts...)
 
 	return results
+}
+
+// ParallelForEachCtx executes an action on each element in parallel with context support.
+func ParallelForEachCtx[T any](ctx context.Context, s Stream[T], action func(context.Context, T), opts ...ParallelOption) error {
+	cfg := DefaultParallelConfig()
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	var (
+		inputCh = make(chan T, cfg.BufferSize)
+		wg      sync.WaitGroup
+		closed  atomic.Bool
+		done    = make(chan struct{})
+	)
+
+	// Monitor context cancellation
+	go func() {
+		select {
+		case <-ctx.Done():
+			if closed.CompareAndSwap(false, true) {
+				close(done)
+			}
+		case <-done:
+		}
+	}()
+
+	for range cfg.Concurrency {
+		wg.Go(func() {
+			for {
+				select {
+				case <-done:
+					return
+				case v, ok := <-inputCh:
+					if !ok {
+						return
+					}
+					action(ctx, v)
+				}
+			}
+		})
+	}
+
+	func() {
+		defer close(inputCh)
+		for v := range s.seq {
+			select {
+			case <-done:
+				return
+			case inputCh <- v:
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
 }
