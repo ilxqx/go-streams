@@ -78,21 +78,41 @@ func (f *FileLineStream) Close() error {
 //	defer stream.Close()
 //	for line := range stream.Seq() { ... }
 func FromFileLines(path string) (*FileLineStream, error) {
-	if file, err := os.Open(path); err != nil {
+	file, err := os.Open(path)
+	if err != nil {
 		return nil, err
-	} else {
-		return &FileLineStream{Stream: FromReaderLines(file), file: file}, nil
 	}
+	return &FileLineStream{Stream: FromReaderLines(file), file: file}, nil
 }
 
 // MustFromFileLines opens a file and creates a Stream of its lines.
 // Panics if the file cannot be opened.
 func MustFromFileLines(path string) *FileLineStream {
-	if fls, err := FromFileLines(path); err != nil {
+	fls, err := FromFileLines(path)
+	if err != nil {
 		panic(err)
-	} else {
-		return fls
 	}
+	return fls
+}
+
+// MustFromCSVFile opens a CSV file and creates a stream of records.
+// Panics if the file cannot be opened.
+func MustFromCSVFile(path string) *CSVStream {
+	cs, err := FromCSVFile(path)
+	if err != nil {
+		panic(err)
+	}
+	return cs
+}
+
+// MustFromTSVFile opens a TSV file and creates a stream of records.
+// Panics if the file cannot be opened.
+func MustFromTSVFile(path string) *CSVStream {
+	cs, err := FromTSVFile(path)
+	if err != nil {
+		panic(err)
+	}
+	return cs
 }
 
 // FromStringLines creates a Stream of lines from a string.
@@ -210,37 +230,50 @@ func fromDelimitedErr(r io.Reader, delim rune) Stream[Result[[]string]] {
 	}
 }
 
+// fromDelimitedFile opens a file and creates a stream of delimited records.
+func fromDelimitedFile(path string, delim rune) (*CSVStream, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	csvReader := csv.NewReader(file)
+	csvReader.Comma = delim
+	stream := Stream[[]string]{
+		seq: func(yield func([]string) bool) {
+			for {
+				record, err := csvReader.Read()
+				if err == io.EOF {
+					return
+				}
+				if err != nil {
+					return
+				}
+				if !yield(record) {
+					return
+				}
+			}
+		},
+	}
+	return &CSVStream{Stream: stream, reader: csvReader, closer: file}, nil
+}
+
 // FromCSVFile opens a CSV file and creates a stream of records.
 // Parse errors terminate the stream silently. For error handling, use FromCSVErr with manual file open.
 func FromCSVFile(path string) (*CSVStream, error) {
-	if file, err := os.Open(path); err != nil {
-		return nil, err
-	} else {
-		csvReader := csv.NewReader(file)
-		stream := Stream[[]string]{
-			seq: func(yield func([]string) bool) {
-				for {
-					record, err := csvReader.Read()
-					if err == io.EOF {
-						return
-					}
-					if err != nil {
-						return
-					}
-					if !yield(record) {
-						return
-					}
-				}
-			},
-		}
-		return &CSVStream{Stream: stream, reader: csvReader, closer: file}, nil
-	}
+	return fromDelimitedFile(path, ',')
 }
 
 // FromTSV creates a Stream of TSV (tab-separated) records.
 // Parse errors terminate the stream silently. Use FromTSVErr for explicit error handling.
 func FromTSV(r io.Reader) Stream[[]string] {
 	return fromDelimited(r, '\t')
+}
+
+// FromTSVFile opens a TSV file and creates a stream of records.
+// Parse errors terminate the stream silently. For error handling, use FromTSVErr with manual file open.
+func FromTSVFile(path string) (*CSVStream, error) {
+	return fromDelimitedFile(path, '\t')
 }
 
 // FromTSVErr creates a Stream of TSV records with error handling.
@@ -359,12 +392,12 @@ func ToWriter[T any](s Stream[T], w io.Writer, format func(T) string) error {
 
 // ToFile writes stream elements to a file, one per line.
 func ToFile[T any](s Stream[T], path string, format func(T) string) error {
-	if file, err := os.Create(path); err != nil {
+	file, err := os.Create(path)
+	if err != nil {
 		return err
-	} else {
-		defer func() { _ = file.Close() }()
-		return ToWriter(s, file, format)
 	}
+	defer func() { _ = file.Close() }()
+	return ToWriter(s, file, format)
 }
 
 // ToCSV writes a stream of string slices as CSV to a writer.
@@ -382,10 +415,10 @@ func ToCSV(s Stream[[]string], w io.Writer) error {
 
 // ToCSVFile writes a stream of string slices as CSV to a file.
 func ToCSVFile(s Stream[[]string], path string) error {
-	if file, err := os.Create(path); err != nil {
+	file, err := os.Create(path)
+	if err != nil {
 		return err
-	} else {
-		defer func() { _ = file.Close() }()
-		return ToCSV(s, file)
 	}
+	defer func() { _ = file.Close() }()
+	return ToCSV(s, file)
 }

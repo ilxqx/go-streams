@@ -911,3 +911,151 @@ func TestToWriterEarlyTermination(t *testing.T) {
 		assert.Equal(t, "1\n2\n3\n4\n5\n", buf.String(), "ToWriter should write all formatted lines")
 	})
 }
+
+// TestMustFromCSVFile tests MustFromCSVFile function.
+func TestMustFromCSVFile(t *testing.T) {
+	t.Parallel()
+	t.Run("Success", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "must.csv", "a,b\n1,2\n3,4")
+		cs := MustFromCSVFile(path)
+		defer func() { _ = cs.Close() }()
+
+		records := cs.Collect()
+		assert.Len(t, records, 3, "MustFromCSVFile should read all rows")
+	})
+
+	t.Run("Panics", func(t *testing.T) {
+		t.Parallel()
+		assert.Panics(t, func() {
+			MustFromCSVFile("/nonexistent/file.csv")
+		}, "MustFromCSVFile should panic for missing file")
+	})
+}
+
+// TestFromTSVFile tests FromTSVFile function.
+func TestFromTSVFile(t *testing.T) {
+	t.Parallel()
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "test.tsv", "a\tb\n1\t2\n3\t4")
+		stream, err := FromTSVFile(path)
+		require.NoError(t, err, "FromTSVFile should open existing file")
+		defer func() { _ = stream.Close() }()
+
+		records := stream.Collect()
+		assert.Len(t, records, 3, "FromTSVFile should read all rows")
+		assert.Equal(t, []string{"a", "b"}, records[0], "FromTSVFile should parse header row")
+	})
+
+	t.Run("NotExists", func(t *testing.T) {
+		t.Parallel()
+		_, err := FromTSVFile("/nonexistent/file.tsv")
+		assert.Error(t, err, "FromTSVFile should return error for missing file")
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "test.tsv", "a\tb\n1\t2\n3\t4\n5\t6")
+		stream, err := FromTSVFile(path)
+		require.NoError(t, err, "FromTSVFile should open existing file")
+		defer func() { _ = stream.Close() }()
+
+		records := stream.Limit(2).Collect()
+		assert.Len(t, records, 2, "FromTSVFile should respect Limit")
+	})
+
+	t.Run("MalformedTSV", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "test.tsv", "a\tb\tc\n1\t2\n3\t4\t5")
+		stream, err := FromTSVFile(path)
+		require.NoError(t, err, "FromTSVFile should open existing file")
+		defer func() { _ = stream.Close() }()
+
+		records := stream.Collect()
+		assert.Less(t, len(records), 3, "FromTSVFile should stop on malformed row")
+	})
+}
+
+// TestMustFromTSVFile tests MustFromTSVFile function.
+func TestMustFromTSVFile(t *testing.T) {
+	t.Parallel()
+	t.Run("Success", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "must.tsv", "a\tb\n1\t2\n3\t4")
+		cs := MustFromTSVFile(path)
+		defer func() { _ = cs.Close() }()
+
+		records := cs.Collect()
+		assert.Len(t, records, 3, "MustFromTSVFile should read all rows")
+	})
+
+	t.Run("Panics", func(t *testing.T) {
+		t.Parallel()
+		assert.Panics(t, func() {
+			MustFromTSVFile("/nonexistent/file.tsv")
+		}, "MustFromTSVFile should panic for missing file")
+	})
+}
+
+// TestUsing tests the Using function for resource management.
+func TestUsing(t *testing.T) {
+	t.Parallel()
+	t.Run("FileLineStream", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "using.txt", "line1\nline2\nline3")
+
+		count := Using(MustFromFileLines(path), func(s *FileLineStream) int {
+			return s.Count()
+		})
+		assert.Equal(t, 3, count, "Using should return block result")
+	})
+
+	t.Run("CSVStream", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "using.csv", "a,b\n1,2\n3,4")
+
+		records := Using(MustFromCSVFile(path), func(s *CSVStream) [][]string {
+			return s.Collect()
+		})
+		assert.Len(t, records, 3, "Using should return collected records")
+	})
+
+	t.Run("TSVStream", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "using.tsv", "a\tb\n1\t2")
+
+		records := Using(MustFromTSVFile(path), func(s *CSVStream) [][]string {
+			return s.Collect()
+		})
+		assert.Len(t, records, 2, "Using should return collected TSV records")
+	})
+
+	t.Run("WithFilter", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "using_filter.txt", "apple\nbanana\napricot\ncherry")
+
+		lines := Using(MustFromFileLines(path), func(s *FileLineStream) []string {
+			return s.Filter(func(line string) bool {
+				return len(line) > 0 && line[0] == 'a'
+			}).Collect()
+		})
+		assert.Equal(t, []string{"apple", "apricot"}, lines, "Using should work with filter")
+	})
+
+	t.Run("WithMap", func(t *testing.T) {
+		t.Parallel()
+		path := createTempFile(t, "using_map.txt", "1\n2\n3")
+
+		sum := Using(MustFromFileLines(path), func(s *FileLineStream) int {
+			total := 0
+			s.ForEach(func(line string) {
+				if n := len(line); n > 0 {
+					total += int(line[0] - '0')
+				}
+			})
+			return total
+		})
+		assert.Equal(t, 6, sum, "Using should work with ForEach")
+	})
+}
