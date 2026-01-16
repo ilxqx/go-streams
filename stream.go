@@ -1368,6 +1368,6 @@ func Permutations[T any](s Stream[T]) Stream[[]T] {
 // The resource must implement the Close() error interface.
 // The Close method is called defer-style, ensuring it runs even if fn panics.
 func Using[T interface{ Close() error }, R any](resource T, fn func(T) R) R {
-	defer resource.Close()
+	defer func() { _ = resource.Close() }()
 	return fn(resource)
 }
