@@ -29,7 +29,8 @@ A lazy, type-safe stream processing library for Go 1.25+, built on `iter.Seq` an
 - Specialized: MergeSorted*, Cartesian/Cross/Combinations/Permutations
 - Terminals: Collect, Reduce/Fold, Count/First/Last/Find*, Any/All/NoneMatch, Min/Max, At/Nth, Single, IsEmpty
 - Parallel: ParallelMap/Filter/FlatMap/Reduce/ForEach/Collect, Prefetch, options WithConcurrency/Ordered/BufferSize/ChunkSize
-- Context‑Aware: WithContext/WithContext2, Generate/Iterate/Range/FromChannel/FromReaderLines Ctx variants, Collect/ForEach/Reduce Ctx variants
+- Context‑Aware: WithContext/WithContext2, Generate/Iterate/Range/FromChannel/FromReaderLines Ctx variants, Collect/ForEach/Reduce Ctx variants, Parallel*Ctx
+- Resource Management: Using (try-with-resources)
 - IO: FromReaderLines/Scanner/String/Bytes/Runes, FromCSV/TSV/WithHeader (+Err), ToWriter/ToFile/ToCSV(+File)
 - Time‑Based: WithTimestamp, Tumbling/Sliding/Session windows, Throttle/RateLimit/Debounce/Sample/Delay/Timeout, Interval/Timer
 - Stream2: Keys/Values/ToPairs/Reduce/DistinctKeys/Values, MapKeys/Values/Pairs, ReduceByKey/GroupValues/ToMap2
@@ -841,6 +842,7 @@ func RangeClosed(start, end int) Stream[int]                 // [start, end]
 
 // Composition and helpers
 func Concat[T any](streams ...Stream[T]) Stream[T]
+func Using[T interface{ Close() error }, R any](resource T, fn func(T) R) R // try-with-resources
 func Empty[T any]() Stream[T]
 func Repeat[T any](value T, n int) Stream[T]
 func RepeatForever[T any](value T) Stream[T]                  // infinite
@@ -1150,10 +1152,14 @@ Operators:
 func ParallelMap[T,U any](s Stream[T], fn func(T) U, opts ...ParallelOption) Stream[U]
 func ParallelFilter[T any](s Stream[T], pred func(T) bool, opts ...ParallelOption) Stream[T]
 func ParallelFlatMap[T,U any](s Stream[T], fn func(T) Stream[U], opts ...ParallelOption) Stream[U]
+func ParallelMapCtx[T,U any](ctx context.Context, s Stream[T], fn func(context.Context, T) U, opts ...ParallelOption) Stream[U]
+func ParallelFilterCtx[T any](ctx context.Context, s Stream[T], pred func(context.Context, T) bool, opts ...ParallelOption) Stream[T]
+func ParallelFlatMapCtx[T,U any](ctx context.Context, s Stream[T], fn func(context.Context, T) Stream[U], opts ...ParallelOption) Stream[U]
 func Prefetch[T any](s Stream[T], n int) Stream[T]                   // decouple producer/consumer
 
 // Terminals
 func ParallelForEach[T any](s Stream[T], action func(T), opts ...ParallelOption)
+func ParallelForEachCtx[T any](ctx context.Context, s Stream[T], action func(context.Context, T), opts ...ParallelOption) error
 func ParallelReduce[T any](s Stream[T], identity T, op func(T,T) T, opts ...ParallelOption) T
 func ParallelCollect[T any](s Stream[T], opts ...ParallelOption) []T // order not guaranteed
 ```
@@ -1393,6 +1399,8 @@ func (s Stream2[K,V]) Skip(n int) Stream2[K,V]
 func (s Stream2[K,V]) Peek(action func(K,V)) Stream2[K,V]
 func (s Stream2[K,V]) TakeWhile(pred func(K,V) bool) Stream2[K,V]
 func (s Stream2[K,V]) DropWhile(pred func(K,V) bool) Stream2[K,V]
+func (s Stream2[K,V]) ParallelMapValues(fn func(V) V, opts ...ParallelOption) Stream2[K,V]
+func (s Stream2[K,V]) ParallelFilter(pred func(K,V) bool, opts ...ParallelOption) Stream2[K,V]
 ```
 
 Terminals and transformations:
