@@ -1361,3 +1361,13 @@ func Permutations[T any](s Stream[T]) Stream[[]T] {
 		},
 	}
 }
+
+// Using ensures that the resource is closed after the function completes.
+// This is similar to try-with-resources in Java or using in C#.
+//
+// The resource must implement the Close() error interface.
+// The Close method is called defer-style, ensuring it runs even if fn panics.
+func Using[T interface{ Close() error }, R any](resource T, fn func(T) R) R {
+	defer resource.Close()
+	return fn(resource)
+}
