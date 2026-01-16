@@ -503,3 +503,183 @@ func TestStream2NewOperations(t *testing.T) {
 		assert.Len(t, result, 2, "MapValues(*10) then Limit(2) should return 2 pairs")
 	})
 }
+
+// TestStream2ParallelMapValues tests Stream2.ParallelMapValues.
+func TestStream2ParallelMapValues(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 1),
+			NewPair("b", 2),
+			NewPair("c", 3),
+		)
+		result := s.ParallelMapValues(func(v int) int {
+			return v * 10
+		}, WithOrdered(true)).CollectPairs()
+
+		assert.Len(t, result, 3, "ParallelMapValues should return all pairs")
+		assert.Equal(t, 10, result[0].Second, "ParallelMapValues should transform first value")
+		assert.Equal(t, 20, result[1].Second, "ParallelMapValues should transform second value")
+		assert.Equal(t, 30, result[2].Second, "ParallelMapValues should transform third value")
+	})
+
+	t.Run("Empty", func(t *testing.T) {
+		t.Parallel()
+		result := Empty2[string, int]().ParallelMapValues(func(v int) int {
+			return v * 10
+		}).CollectPairs()
+		assert.Empty(t, result, "ParallelMapValues on empty should return empty")
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 1),
+			NewPair("b", 2),
+			NewPair("c", 3),
+			NewPair("d", 4),
+			NewPair("e", 5),
+		)
+		result := s.ParallelMapValues(func(v int) int {
+			return v * 10
+		}, WithOrdered(true)).Limit(2).CollectPairs()
+
+		assert.Len(t, result, 2, "ParallelMapValues should respect Limit")
+	})
+
+	t.Run("Unordered", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 1),
+			NewPair("b", 2),
+			NewPair("c", 3),
+		)
+		result := s.ParallelMapValues(func(v int) int {
+			return v * 10
+		}, WithOrdered(false)).CollectPairs()
+
+		assert.Len(t, result, 3, "ParallelMapValues unordered should return all pairs")
+	})
+
+	t.Run("LargeInput", func(t *testing.T) {
+		t.Parallel()
+		pairs := make([]Pair[int, int], 100)
+		for i := range pairs {
+			pairs[i] = NewPair(i, i)
+		}
+		s := PairsOf(pairs...)
+		result := s.ParallelMapValues(func(v int) int {
+			return v * 2
+		}, WithConcurrency(4), WithOrdered(true)).CollectPairs()
+
+		assert.Len(t, result, 100, "ParallelMapValues should handle large input")
+		for i, p := range result {
+			assert.Equal(t, i*2, p.Second, "ParallelMapValues should transform all values correctly")
+		}
+	})
+}
+
+// TestStream2ParallelFilter tests Stream2.ParallelFilter.
+func TestStream2ParallelFilter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 1),
+			NewPair("b", 2),
+			NewPair("c", 3),
+			NewPair("d", 4),
+		)
+		result := s.ParallelFilter(func(k string, v int) bool {
+			return v%2 == 0
+		}, WithOrdered(true)).CollectPairs()
+
+		assert.Len(t, result, 2, "ParallelFilter should filter pairs")
+		assert.Equal(t, "b", result[0].First, "ParallelFilter should keep matching pairs")
+		assert.Equal(t, "d", result[1].First, "ParallelFilter should keep matching pairs")
+	})
+
+	t.Run("Empty", func(t *testing.T) {
+		t.Parallel()
+		result := Empty2[string, int]().ParallelFilter(func(k string, v int) bool {
+			return true
+		}).CollectPairs()
+		assert.Empty(t, result, "ParallelFilter on empty should return empty")
+	})
+
+	t.Run("AllMatch", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 2),
+			NewPair("b", 4),
+			NewPair("c", 6),
+		)
+		result := s.ParallelFilter(func(k string, v int) bool {
+			return v%2 == 0
+		}, WithOrdered(true)).CollectPairs()
+
+		assert.Len(t, result, 3, "ParallelFilter should keep all when all match")
+	})
+
+	t.Run("NoneMatch", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 1),
+			NewPair("b", 3),
+			NewPair("c", 5),
+		)
+		result := s.ParallelFilter(func(k string, v int) bool {
+			return v%2 == 0
+		}, WithOrdered(true)).CollectPairs()
+
+		assert.Empty(t, result, "ParallelFilter should return empty when none match")
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 2),
+			NewPair("b", 4),
+			NewPair("c", 6),
+			NewPair("d", 8),
+			NewPair("e", 10),
+		)
+		result := s.ParallelFilter(func(k string, v int) bool {
+			return v%2 == 0
+		}, WithOrdered(true)).Limit(2).CollectPairs()
+
+		assert.Len(t, result, 2, "ParallelFilter should respect Limit")
+	})
+
+	t.Run("Unordered", func(t *testing.T) {
+		t.Parallel()
+		s := PairsOf(
+			NewPair("a", 1),
+			NewPair("b", 2),
+			NewPair("c", 3),
+			NewPair("d", 4),
+		)
+		result := s.ParallelFilter(func(k string, v int) bool {
+			return v%2 == 0
+		}, WithOrdered(false)).CollectPairs()
+
+		assert.Len(t, result, 2, "ParallelFilter unordered should filter correctly")
+	})
+
+	t.Run("LargeInput", func(t *testing.T) {
+		t.Parallel()
+		pairs := make([]Pair[int, int], 100)
+		for i := range pairs {
+			pairs[i] = NewPair(i, i)
+		}
+		s := PairsOf(pairs...)
+		result := s.ParallelFilter(func(k int, v int) bool {
+			return v%2 == 0
+		}, WithConcurrency(4), WithOrdered(true)).CollectPairs()
+
+		assert.Len(t, result, 50, "ParallelFilter should filter large input correctly")
+	})
+}

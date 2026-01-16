@@ -311,6 +311,40 @@ func MapValuesTo[K, V, V2 any](s Stream2[K, V], fn func(V) V2) Stream2[K, V2] {
 	}
 }
 
+// ParallelMapValues transforms the values using the given function in parallel.
+func (s Stream2[K, V]) ParallelMapValues(fn func(V) V, opts ...ParallelOption) Stream2[K, V] {
+	return Stream2[K, V]{
+		seq: func(yield func(K, V) bool) {
+			mapped := ParallelMap(s.ToPairs(), func(p Pair[K, V]) Pair[K, V] {
+				return Pair[K, V]{First: p.First, Second: fn(p.Second)}
+			}, opts...)
+
+			for p := range mapped.Seq() {
+				if !yield(p.First, p.Second) {
+					return
+				}
+			}
+		},
+	}
+}
+
+// ParallelFilter returns a Stream2 containing only pairs that match the predicate in parallel.
+func (s Stream2[K, V]) ParallelFilter(pred func(K, V) bool, opts ...ParallelOption) Stream2[K, V] {
+	return Stream2[K, V]{
+		seq: func(yield func(K, V) bool) {
+			filtered := ParallelFilter(s.ToPairs(), func(p Pair[K, V]) bool {
+				return pred(p.First, p.Second)
+			}, opts...)
+
+			for p := range filtered.Seq() {
+				if !yield(p.First, p.Second) {
+					return
+				}
+			}
+		},
+	}
+}
+
 // MapPairs transforms Stream2[K, V] to Stream2[K2, V2].
 func MapPairs[K, V, K2, V2 any](s Stream2[K, V], fn func(K, V) (K2, V2)) Stream2[K2, V2] {
 	return Stream2[K2, V2]{
